@@ -1,0 +1,6 @@
+# Compiled binary
+msh
+*.o
+
+# macOS junk
+.DS_Store
