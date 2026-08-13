@@ -1,17 +1,3 @@
-// #include<stdio.h>
-// #include<string.h>
-// #include<stdlib.h>
-
-// int main(){
-//     char  line[] = "cmd0 > cmd2";
-//     char * token , * last;
-//     token= strtok(line,"|");
-//     while(token){
-//         printf("%s\n",token);
-//         token = strtok(NULL,"|");
-//     }
-//     return 0;
-// }
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
@@ -24,6 +10,7 @@
 #define tokens_buffer_size 32
 #define token_delimiters " \t\r\n\a"
 #define redirection_buffer_size 4
+#define sequence_buffer_size 4
 #define piping_buffer_size 4
 char *msh_readLine()
 {
@@ -50,35 +37,96 @@ char * trim(char * s){
     else end[1]='\0';
     return s;
 }
-char ** msh_tokenizeLineLayerOne(char *line,int *number_of_pipes){
-    char ** piping = malloc(piping_buffer_size*sizeof(char *));
-    int size = piping_buffer_size;
-    int position =0;
-    char * token;
-    if (!piping)
+char ** msh_tokenizeLineLayerOne(char *line, char ** op_ptr){
+    char ** sequences = malloc(sequence_buffer_size*sizeof(char *));
+    char * op = malloc(sequence_buffer_size*sizeof(char));
+    int size = sequence_buffer_size;
+    int sequence_index =0;
+    if (!sequences || !op)
     {
         fprintf(stderr, "msh : allocation error\n");
         exit(EXIT_FAILURE);
     }
-    token = strtok(line,"|");
-    while(token){
-        char * trimed_token = trim(token);
-        piping[position]=trimed_token;
-        position++;
-        if (position >= size)
+    int line_index = 0 ;
+    char * token = &line[line_index];
+    while(line[line_index]!='\0'){
+        if(line[line_index]=='|' && line[line_index+1]=='|'){
+            line[line_index]='\0';
+            line[line_index+1]='\0';
+            sequences[sequence_index]=trim(token);
+            op[sequence_index]='O';
+            sequence_index++;
+            line_index+=2;
+            token=&line[line_index];
+        }
+        else if(line[line_index]=='&' && line[line_index+1]=='&'){
+            line[line_index]='\0';
+            line[line_index+1]='\0';
+            sequences[sequence_index]=trim(token);
+            op[sequence_index]='A';
+            sequence_index++;
+            line_index+=2;
+            token=&line[line_index];
+        }
+        else if(line[line_index]=='&'){
+            line[line_index]='\0';
+            sequences[sequence_index]=trim(token);
+            op[sequence_index]='B';
+            sequence_index++;
+            line_index++;
+            token=&line[line_index];
+        }
+        else line_index++;
+        if (sequence_index >= size)
         {
-            size += piping_buffer_size;
-            piping = realloc(piping, size * sizeof(char *));
-            if (!piping)
+            size += sequence_buffer_size;
+            sequences = realloc(sequences, size * sizeof(char *));
+            op = realloc(op, size * sizeof(char));
+            if (!sequences || !op)
             {
                 fprintf(stderr, "msh : allocation error\n");
                 exit(EXIT_FAILURE);
             }
         }
-        token = strtok(NULL,"|");
     }
-    piping[position]=NULL;
-    *number_of_pipes = position-1;
+    op[sequence_index]='\0';
+    sequences[sequence_index++]=trim(token);
+    sequences[sequence_index]=NULL;
+    *op_ptr = op;
+    return sequences;
+}
+char ** msh_tokenizeLineLayerTwo(char * line , int * number_of_pipes){
+    char ** piping = malloc(piping_buffer_size*sizeof(char *));
+    int size = piping_buffer_size;
+    int piping_index =0;
+    if (!piping)
+    {
+        fprintf(stderr, "msh : allocation error\n");
+        exit(EXIT_FAILURE);
+    }
+
+    int i=0;
+    char * token_p = &line[i];
+    while(line[i]!='\0'){
+        if(line[i]=='|'){
+            line[i]='\0';
+            piping[piping_index++]=trim(token_p);
+            if(piping_index>=size){
+                size+=piping_buffer_size;
+                piping=realloc(piping,size*sizeof(char*));
+                if (!piping)
+                {
+                    fprintf(stderr, "msh : allocation error\n");
+                    exit(EXIT_FAILURE);
+                }
+            }
+            token_p=&line[i+1];
+        }
+        i++;
+    }
+    piping[piping_index++]=trim(token_p);
+    piping[piping_index]=NULL;
+    *number_of_pipes = piping_index-1;
     return piping;
 }
 char **msh_tokenizeLine(char *line,int ** redirection_ptr)
@@ -242,6 +290,7 @@ int msh_executeLine(char **args,int * redirection)
         else if (chdir(args[1]) != 0)
         {
             perror(args[1]);
+            return 0;
         }
         return 1;
     }
@@ -319,29 +368,51 @@ int msh_executeLine(char **args,int * redirection)
     }
     return 1;
 }
-int main()
-{
-    char *line;
-    char ** pipe_args;
-    char **args;
+int msh_executeLayerOne(char ** sequences,char * op){
     int status;
-    do
-    {
-        int *redirection=NULL;
+    int i=0;
+    while(sequences[i]){
+        char * line = sequences[i];
+        char ** pipe_args;
         int number_of_pipes;
-        line = msh_readLine();
-        pipe_args =  msh_tokenizeLineLayerOne(line,&number_of_pipes);
+        pipe_args =  msh_tokenizeLineLayerTwo(line,&number_of_pipes);
         if(number_of_pipes){
             status = msh_executePipeArgs(pipe_args,number_of_pipes);
         }
         else{
+            char **args;
+            int *redirection=NULL;
             args = msh_tokenizeLine(line,&redirection);
             status = msh_executeLine(args,redirection);
             free(args);
             free(redirection);
         }
-        free(line);
         free(pipe_args);
+        if(op[i]=='A'){
+            if(!status)return 1;
+        }
+        else if(op[i]=='O'){
+            if(status)return 1;
+        }
+        i++;
+    }
+    return 1;
+}
+int main()
+{
+    char *line;
+    char ** sequences;
+    int status;
+    do
+    {
+        char * op;
+        line = msh_readLine();
+        sequences = msh_tokenizeLineLayerOne(line,&op);
+        status = msh_executeLayerOne(sequences,op);
+        free (op);
+        free(line);
+        free(sequences);
+        
     } while (status);
     return 0;
 }
