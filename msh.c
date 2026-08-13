@@ -394,7 +394,7 @@ int msh_executeLine(char **args,int * redirection)
     return 1;
 }
 int msh_executeLayerOne(char ** sequences,char * op){
-    int status;
+    int status=1;
     int i=0;
     while(sequences[i]){
         char * line = sequences[i];
@@ -421,7 +421,7 @@ int msh_executeLayerOne(char ** sequences,char * op){
         }
         i++;
     }
-    return 1;
+    return status;
 }
 int main()
 {
