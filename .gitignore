@@ -3,6 +3,7 @@ msh
 redirection04.c
 parser_updated.c
 parser_updated02.c
+parser_updated02pro.c
 *.o
 
 # macOS junk

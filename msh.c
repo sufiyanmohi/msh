@@ -243,12 +243,18 @@ int msh_executePipeArgs(char ** piping,int number_of_pipes){
         return 1;
     }
     int fds[number_of_pipes][2];
+    int status;
     pid_t pids[number_of_pipes+1];
     for(int i=0;i<number_of_pipes;i++){
         pipe(fds[i]);
     }
     for(int i=0;i<=number_of_pipes;i++){
         pids[i]=fork();
+        if (pids[i] < 0)
+        {
+            fprintf(stderr, "msh : Fork failed \n");
+            exit(EXIT_FAILURE);
+        }
         if(pids[i]==0){
             if(i<number_of_pipes){
                 dup2(fds[i][1],STDOUT_FILENO);
@@ -270,10 +276,21 @@ int msh_executePipeArgs(char ** piping,int number_of_pipes){
         close(fds[i][0]);
         close(fds[i][1]);
     }
-    for(int i=0;i<=number_of_pipes;i++){
+    for(int i=0;i<number_of_pipes;i++){
         waitpid(pids[i],NULL,0);
     }
-    return 1;
+    do
+    {
+        waitpid(pids[number_of_pipes], &status, WUNTRACED);
+    } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+    if (WIFEXITED(status))
+    {
+        return WEXITSTATUS(status) == 0;   
+    }
+    else
+    {
+        return 0;   
+    }
 }
 int msh_executeLine(char **args,int * redirection)
 {   
@@ -364,6 +381,14 @@ int msh_executeLine(char **args,int * redirection)
             {
                 waitpid(pid, &status, WUNTRACED);
             } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+            if (WIFEXITED(status))
+            {
+                return WEXITSTATUS(status) == 0;   
+            }
+            else
+            {
+                return 0;   
+            }
         }
     }
     return 1;
@@ -416,3 +441,22 @@ int main()
     } while (status);
     return 0;
 }
+/*
+gcc helloincd -o helloincd
+op : ld: unsupported mach-o filetype (only MH_OBJECT and MH_DYLIB can be linked) in '/Users/sufiyanmohiuddin/Desktop/sufiyan_coding/shell_in_c/cd_hello/helloincd'
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+./hello || ./helloincd  
+op : ./hello: No such file or directory
+op2 : ./hello: No such file or directory
+hello this is helloincd.c 
+false | true && echo "pipeline succeeded"
+"pipeline succeeded"
+> true | false && echo "should NOT print"
+"should NOT print"
+> true | false || echo "pipeline failed"
+> false | false | true && echo "still succeeds"
+"still succeeds"
+> ./nonexistent | echo hi
+./nonexistent: No such file or directory
+hi
+*/
