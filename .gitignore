@@ -1,6 +1,7 @@
 # Compiled binary
 msh
 redirection04.c
+parser_updated.c
 *.o
 
 # macOS junk
