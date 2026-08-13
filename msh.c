@@ -441,22 +441,3 @@ int main()
     } while (status);
     return 0;
 }
-/*
-gcc helloincd -o helloincd
-op : ld: unsupported mach-o filetype (only MH_OBJECT and MH_DYLIB can be linked) in '/Users/sufiyanmohiuddin/Desktop/sufiyan_coding/shell_in_c/cd_hello/helloincd'
-clang: error: linker command failed with exit code 1 (use -v to see invocation)
-./hello || ./helloincd  
-op : ./hello: No such file or directory
-op2 : ./hello: No such file or directory
-hello this is helloincd.c 
-false | true && echo "pipeline succeeded"
-"pipeline succeeded"
-> true | false && echo "should NOT print"
-"should NOT print"
-> true | false || echo "pipeline failed"
-> false | false | true && echo "still succeeds"
-"still succeeds"
-> ./nonexistent | echo hi
-./nonexistent: No such file or directory
-hi
-*/
