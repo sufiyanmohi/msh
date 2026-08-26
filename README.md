@@ -11,7 +11,7 @@ Provides built-in commands `cd` and `exit`, and uses a combination of `fork()` a
 - **I/O redirection**: `>` (truncate), `>>` (append), `<` (input)
 - **Piping**: multi-stage pipelines, e.g. `ls | grep msh | wc -l`
 - **Command sequencing**: `&&`, `||`  operators e.g. `make && ./msh || ./hello`
-  **Background Process**:,  `&` operator to run process in bg e.g. `./msh &`
+- **Background Process**:,  `&` operator to run process in bg e.g. `./msh &`
 
 ## How it works
 
@@ -48,4 +48,4 @@ false || echo "fallback"
 
 1. Tutorial – [Write a Shell in C](https://brennan.io/2015/01/16/write-a-shell-in-c/) by Stephen Brennan
 2. Claude for debugging assistance
-3. AUPE - Advanced Programming in the UNIX Environment, Third Edition (Chapter 8,9,10)
+3. APUE - Advanced Programming in the UNIX Environment, Third Edition (Chapter 8,9,10)
