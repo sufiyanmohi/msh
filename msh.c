@@ -16,6 +16,7 @@
 #define piping_buffer_size 4
 static int should_exit = 0;
 sigset_t mask, oldmask;
+int msh_terminal ;
 char *msh_readLine()
 {
     char *line = NULL;
@@ -204,6 +205,12 @@ char **msh_tokenizeLine(char *line, int **redirection_ptr)
     *redirection_ptr = redirection;
     return tokens;
 }
+void signal_reset(){
+    signal(SIGTTOU,SIG_DFL);
+    signal(SIGTTIN,SIG_DFL);
+    signal(SIGTSTP,SIG_DFL);
+    signal(SIGINT,SIG_DFL);
+}
 void masked_exec(char *line)
 {
     int *redirection = NULL;
@@ -262,6 +269,7 @@ void masked_exec(char *line)
     }
     free(redirection);
     sigprocmask(SIG_UNBLOCK, &mask, &oldmask);
+    signal_reset();
     if (execvp(args[0], args) == -1)
     {
         perror(args[0]);
@@ -288,6 +296,7 @@ int msh_executePipeArgs(char **piping, int number_of_pipes)
     for (int i = 0; i <= number_of_pipes; i++)
     {
         pids[i] = fork();
+        
         if (pids[i] < 0)
         {
             fprintf(stderr, "msh : Fork failed \n");
@@ -295,6 +304,11 @@ int msh_executePipeArgs(char **piping, int number_of_pipes)
         }
         if (pids[i] == 0)
         {
+            if(i==0){
+                setpgid(0,0);
+                tcsetpgrp(msh_terminal,pids[0]);
+            }
+            else setpgid(pids[i],pids[0]);
             if (i < number_of_pipes)
             {
                 dup2(fds[i][1], STDOUT_FILENO);
@@ -315,8 +329,13 @@ int msh_executePipeArgs(char **piping, int number_of_pipes)
             exit(EXIT_FAILURE);
         }
     }
+    setpgid(pids[0],pids[0]);
+    tcsetpgrp(msh_terminal,pids[0]);
+    for(int i=1;i<=number_of_pipes;i++){
+        setpgid(pids[i],pids[0]);
+    }
     for (int i = 0; i < number_of_pipes; i++)
-    {
+    {   
         close(fds[i][0]);
         close(fds[i][1]);
     }
@@ -328,6 +347,8 @@ int msh_executePipeArgs(char **piping, int number_of_pipes)
     {
         waitpid(pids[number_of_pipes], &status, WUNTRACED);
     } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+
+    tcsetpgrp(msh_terminal,getpgrp());
     if (WIFEXITED(status))
     {
         return WEXITSTATUS(status) == 0;
@@ -372,6 +393,8 @@ int msh_executeLine(char **args, int *redirection)
         }
         else if (pid == 0)
         {
+            setpgid(0,0);
+            tcsetpgrp(msh_terminal,getpid());
             if (redirection != NULL)
             {
                 int i = 0;
@@ -423,6 +446,7 @@ int msh_executeLine(char **args, int *redirection)
                 args[redirection[0]] = NULL;
             }
             sigprocmask(SIG_UNBLOCK, &mask, &oldmask);
+            signal_reset();
             if (execvp(args[0], args) == -1)
             {
                 perror(args[0]);
@@ -431,10 +455,14 @@ int msh_executeLine(char **args, int *redirection)
         }
         else
         {
+            setpgid(pid,pid);
+            tcsetpgrp(msh_terminal,pid);
             do
             {
                 waitpid(pid, &status, WUNTRACED);
             } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+
+            tcsetpgrp(msh_terminal,getpgrp());
             if (WIFEXITED(status))
             {
                 return WEXITSTATUS(status) == 0;
@@ -482,6 +510,8 @@ int msh_executeLayerOne(char **sequences, char *op)
             }
             else if (pid == 0)
             {
+                printf("[background job] pid %d\n", getpid());
+                setpgid(0,0);
                 if (redirection != NULL)
                 {
                     int i = 0;
@@ -532,7 +562,7 @@ int msh_executeLayerOne(char **sequences, char *op)
                     }
                     args[redirection[0]] = NULL;
                 }
-
+                signal_reset();
                 if (execvp(args[0], args) == -1)
                 {
                     perror(args[0]);
@@ -541,6 +571,7 @@ int msh_executeLayerOne(char **sequences, char *op)
             }
             else
             {
+                setpgid(pid,pid);
                 free(args);
                 free(redirection);
                 status = 1;
@@ -579,7 +610,7 @@ void sigchld_handler(int sig)
     pid_t p;
     while ((p = waitpid(-1, &status, WNOHANG)) > 0)
     {
-        printf("[background] pid %d finished\n", p);// not async safe but i'll change later 
+        printf("[background] pid %d finished\n", p);
     }
     errno = saved_errno;
 }
@@ -592,8 +623,14 @@ int main()
     sa.sa_handler = sigchld_handler;
     sa.sa_flags = SA_RESTART;
     sigaction(SIGCHLD, &sa, NULL);
+    signal(SIGTTOU,SIG_IGN);
+    signal(SIGTTIN,SIG_IGN);
+    signal(SIGTSTP,SIG_IGN);
+    signal(SIGINT,SIG_IGN);
+    msh_terminal = open("/dev/tty",O_RDWR);
     do
     {
+
         char *op;
         line = msh_readLine();
         sequences = msh_tokenizeLineLayerOne(line, &op);
