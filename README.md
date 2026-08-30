@@ -2,16 +2,16 @@
 
 A simple shell implementation in C, inspired by Stephen Brennan's tutorial, extended with I/O redirection, piping,command sequencing and background processing.
 
-Provides built-in commands `cd` and `exit`, and uses a combination of `fork()` and `execvp()` to execute other commands like `ls`, `echo`, `gcc`, `python3`, etc., along with their arguments.
+Provides built-in commands `cd` , `exit` and `jobs`, and uses a combination of `fork()` and `execvp()` to execute other commands like `ls`, `echo`, `gcc`, `python3`, etc., along with their arguments.
 
 ## Features
 
-- **Built-ins**: `cd`, `exit`
+- **Built-ins**: `cd`, `exit` , `jobs`
 - **External commands**: anything on `$PATH`, via `fork()` + `execvp()`
 - **I/O redirection**: `>` (truncate), `>>` (append), `<` (input)
 - **Piping**: multi-stage pipelines, e.g. `ls | grep msh | wc -l`
 - **Command sequencing**: `&&`, `||`  operators e.g. `make && ./msh || ./hello`
-- **Background Process**:,  `&` operator to run process in bg e.g. `./msh &`
+- **Background Process**: `&` operator to run process in bg e.g. `./msh &`
 
 ## How it works
 
@@ -43,6 +43,9 @@ cat out.txt >> log.txt
 make && ./msh || ./hello
 false || echo "fallback"
 ./hello & sleep 5 &
+jobs
+kill <pid>
+exit
 ```
 ## Credits
 

@@ -17,6 +17,99 @@
 static int should_exit = 0;
 sigset_t mask, oldmask;
 int msh_terminal ;
+int job_counter = 0;
+struct job_node {
+    int job_id;
+    //pid_t pid ;
+    pid_t pgid ;
+    enum status {
+        running = 1,
+        suspended = 0,
+        terminated = -1,
+    }status;
+    char * cmd;
+    struct job_node * next ;
+}*head=NULL;
+void print_jobs(struct job_node * node){
+    while(node){
+        if(node->status == 1){
+            if(node->next){
+                printf("[%d] - running %s\n",node->job_id,node->cmd);
+            }
+            else printf("[%d] + running %s\n",node->job_id,node->cmd);
+        }
+        else  if (node->status == 0){
+            if(node->next){
+                printf("[%d] - suspended %s\n",node->job_id,node->cmd);
+            }
+            else printf("[%d] + suspended %s\n",node->job_id,node->cmd);
+        }
+        else {
+            if(node->next){
+                printf("[%d] - terminated %s\n",node->job_id,node->cmd);
+            }
+            else printf("[%d] + terminated %s\n",node->job_id,node->cmd);
+        }
+        node=node->next;
+    }
+} 
+struct job_node * add_job(struct job_node * head,int job_id,int status, char * cmd,pid_t pgid){
+    if(!head){
+        head = (struct job_node *)malloc(sizeof(*head));
+        head->next = NULL;
+        head->job_id= job_id;
+        head->status = status;
+        head->cmd = strdup(cmd);
+        head->pgid = pgid;
+        return head;
+    }
+    struct job_node * ptr = head;
+    while (ptr->next)
+    {
+    ptr=ptr->next;
+    }
+    struct job_node * new_node = (struct job_node *)malloc(sizeof(*new_node));
+    new_node->next = NULL;
+    new_node->job_id= job_id;
+    new_node->status = status;
+    new_node->cmd = strdup(cmd);
+    new_node->pgid=pgid;
+    ptr->next = new_node;
+    return head;
+}
+struct job_node * remove_job(struct job_node * head , pid_t pgid){
+    struct job_node * ptr = head ;
+    while( ptr && ptr->pgid != pgid){
+        ptr = ptr->next;
+    }
+    if(ptr){
+        if(ptr==head) {
+            struct job_node * temp = head ;
+            head = head->next;
+            if(temp->next){
+                printf("[%d] - terminated %s\n",temp->job_id,temp->cmd);
+            }
+            else printf("[%d] + terminated %s\n",temp->job_id,temp->cmd);
+            free(temp->cmd);
+            free(temp);
+            job_counter--;
+            return head;
+        }
+        struct job_node * temp = head;
+        while(temp->next!=ptr){
+            temp = temp->next;
+        }
+        temp->next=ptr->next;
+        job_counter--;
+        if(ptr->next){
+            printf("[%d] - terminated %s\n",ptr->job_id,ptr->cmd);
+        }
+        else printf("[%d] + terminated %s\n",ptr->job_id,ptr->cmd);
+        free(ptr->cmd);
+        free(ptr);
+    }
+    return head;
+}
 char *msh_readLine()
 {
     char *line = NULL;
@@ -377,6 +470,10 @@ int msh_executeLine(char **args, int *redirection)
         }
         return 1;
     }
+    else if(strcmp(args[0],"jobs")==0){
+        print_jobs(head);
+        return 1;
+    }
     else if (strcmp(args[0], "exit") == 0)
     {
         should_exit = 1;
@@ -480,7 +577,6 @@ int msh_executeLayerOne(char **sequences, char *op)
     sigemptyset(&mask);
     sigemptyset(&oldmask);
     sigaddset(&mask, SIGCHLD);
-
     int status = 1;
     int i = 0;
     while (sequences[i])
@@ -501,7 +597,8 @@ int msh_executeLayerOne(char **sequences, char *op)
             int *redirection = NULL;
             args = msh_tokenizeLine(line, &redirection);
             int status;
-
+            job_counter++;
+            sigprocmask(SIG_BLOCK, &mask, &oldmask);//
             pid_t pid = fork();
             if (pid < 0)
             {
@@ -510,7 +607,7 @@ int msh_executeLayerOne(char **sequences, char *op)
             }
             else if (pid == 0)
             {
-                printf("[background job] pid %d\n", getpid());
+                printf("[%d] pid %d\n", job_counter,getpid());
                 setpgid(0,0);
                 if (redirection != NULL)
                 {
@@ -572,6 +669,8 @@ int msh_executeLayerOne(char **sequences, char *op)
             else
             {
                 setpgid(pid,pid);
+                head = add_job(head,job_counter,running,(char *)args[0],pid);
+                sigprocmask(SIG_UNBLOCK, &mask, &oldmask);//
                 free(args);
                 free(redirection);
                 status = 1;
@@ -610,7 +709,7 @@ void sigchld_handler(int sig)
     pid_t p;
     while ((p = waitpid(-1, &status, WNOHANG)) > 0)
     {
-        printf("[background] pid %d finished\n", p);
+        head = remove_job(head,p);
     }
     errno = saved_errno;
 }
@@ -630,7 +729,6 @@ int main()
     msh_terminal = open("/dev/tty",O_RDWR);
     do
     {
-
         char *op;
         line = msh_readLine();
         sequences = msh_tokenizeLineLayerOne(line, &op);
