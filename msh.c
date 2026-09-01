@@ -86,13 +86,8 @@ struct job_node * remove_job(struct job_node * head , pid_t pgid){
         if(ptr==head) {
             struct job_node * temp = head ;
             head = head->next;
-            if(temp->next){
-                printf("[%d] - terminated %s\n",temp->job_id,temp->cmd);
-            }
-            else printf("[%d] + terminated %s\n",temp->job_id,temp->cmd);
             free(temp->cmd);
             free(temp);
-            job_counter--;
             return head;
         }
         struct job_node * temp = head;
@@ -100,11 +95,6 @@ struct job_node * remove_job(struct job_node * head , pid_t pgid){
             temp = temp->next;
         }
         temp->next=ptr->next;
-        job_counter--;
-        if(ptr->next){
-            printf("[%d] - terminated %s\n",ptr->job_id,ptr->cmd);
-        }
-        else printf("[%d] + terminated %s\n",ptr->job_id,ptr->cmd);
         free(ptr->cmd);
         free(ptr);
     }
@@ -304,6 +294,44 @@ void signal_reset(){
     signal(SIGTSTP,SIG_DFL);
     signal(SIGINT,SIG_DFL);
 }
+struct job_node * find_job_jid(struct job_node * head , int job_id){
+    struct job_node * ptr = head;
+    while(ptr && ptr->job_id!=job_id){
+        ptr=ptr->next;
+    }
+    return ptr;
+}
+struct job_node * find_job_pid(struct job_node * head , pid_t pid){
+    struct job_node * ptr = head;
+    while(ptr && ptr->pgid!=pid){
+        ptr=ptr->next;
+    }
+    return ptr;
+}
+void fg_helper(struct job_node * ptr){
+    int status;
+    pid_t fg_pgid = ptr->pgid;
+    char * fg_cmd =strdup(ptr->cmd) ;
+
+    if(ptr->status==suspended || ptr->status == running){
+        if(tcsetpgrp(msh_terminal,ptr->pgid)==0){
+            head=remove_job(head,ptr->pgid);
+            if(ptr->status==suspended){
+                kill(-fg_pgid,SIGCONT);
+            }
+            do
+            {
+                waitpid(-fg_pgid, &status, WUNTRACED);
+            } while (!WIFEXITED(status) && !WIFSIGNALED(status) && !WIFSTOPPED(status) );//
+            tcsetpgrp(msh_terminal,getpgrp());
+            if(WIFSTOPPED(status)){
+                job_counter++;
+                head = add_job(head,job_counter,suspended,fg_cmd,fg_pgid);
+            }
+        }
+    }
+    free(fg_cmd);
+}
 void masked_exec(char *line)
 {
     int *redirection = NULL;
@@ -474,6 +502,32 @@ int msh_executeLine(char **args, int *redirection)
         print_jobs(head);
         return 1;
     }
+    else if (strcmp(args[0],"fg")==0){
+        if (!args[1]){
+            if (!head) {
+                fprintf(stderr, "msh: fg: no current job\n");
+                return 1;
+            }
+            struct job_node * ptr = head;
+            while(ptr->next)ptr=ptr->next;
+            fg_helper(ptr);
+        }
+        else if (args[1][0]=='%'){
+            char * endptr ;
+            long jid = strtol((args[1]+1),&endptr,10);
+            if(*(args[1]+1)=='\0' || *endptr != '\0'){
+                fprintf(stderr,"msh : %%%ld no such job id\n",jid);
+                return 1;
+            }
+            struct job_node * ptr = find_job_jid(head,(int)jid);
+            if (!ptr) {
+                fprintf(stderr, "msh: fg: %%%ld: no such job\n", jid);
+                return 1;
+            }
+            fg_helper(ptr);
+        }
+        return 1;
+    }
     else if (strcmp(args[0], "exit") == 0)
     {
         should_exit = 1;
@@ -557,12 +611,17 @@ int msh_executeLine(char **args, int *redirection)
             do
             {
                 waitpid(pid, &status, WUNTRACED);
-            } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+            } while (!WIFEXITED(status) && !WIFSIGNALED(status) && !WIFSTOPPED(status));
 
             tcsetpgrp(msh_terminal,getpgrp());
             if (WIFEXITED(status))
             {
                 return WEXITSTATUS(status) == 0;
+            }
+            else if(WIFSTOPPED(status)){
+                job_counter++;
+                head = add_job(head,job_counter,suspended,(char *)args[0],pid);
+                return 1;
             }
             else
             {
@@ -709,7 +768,14 @@ void sigchld_handler(int sig)
     pid_t p;
     while ((p = waitpid(-1, &status, WNOHANG)) > 0)
     {
+        struct job_node * temp = find_job_pid(head,p);
+        if(temp){
+            if(temp->next){
+            printf("[%d] - terminated %s\n",temp->job_id,temp->cmd);
+        }
+        else printf("[%d] + terminated %s\n",temp->job_id,temp->cmd);
         head = remove_job(head,p);
+        }
     }
     errno = saved_errno;
 }
