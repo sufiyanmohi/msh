@@ -311,13 +311,27 @@ struct job_node * find_job_pid(struct job_node * head , pid_t pid){
 void fg_helper(struct job_node * ptr){
     int status;
     pid_t fg_pgid = ptr->pgid;
+    int fg_jid = ptr->job_id;
+    enum status fg_status = ptr->status;
     char * fg_cmd =strdup(ptr->cmd) ;
-
+    struct job_node * fg_next = ptr->next;
     if(ptr->status==suspended || ptr->status == running){
+        if(ptr->status==running){
+            if(ptr->next){
+                printf("[%d] - running %s\n",ptr->job_id,ptr->cmd);
+            }
+            else printf("[%d] + running %s\n",ptr->job_id,ptr->cmd);
+        }
         if(tcsetpgrp(msh_terminal,ptr->pgid)==0){
             head=remove_job(head,ptr->pgid);
-            if(ptr->status==suspended){
-                kill(-fg_pgid,SIGCONT);
+            if(fg_status==suspended){
+                if(fg_next){
+                    printf("[%d] - continued %s\n",fg_jid,fg_cmd);
+                }
+                else printf("[%d] + continued %s\n",fg_jid,fg_cmd);
+                if(kill(-fg_pgid,SIGCONT)==-1){
+                    fprintf(stderr,"msh : fg failed !\n");
+                }
             }
             do
             {
@@ -329,8 +343,21 @@ void fg_helper(struct job_node * ptr){
                 head = add_job(head,job_counter,suspended,fg_cmd,fg_pgid);
             }
         }
+        else fprintf(stderr,"msh : fg failed !\n");
     }
     free(fg_cmd);
+}
+void bg_helper(struct job_node * ptr){
+    if(ptr->status==suspended){
+        ptr->status=running;
+        if(ptr->next){
+            printf("[%d] - continued %s\n",ptr->job_id,ptr->cmd);
+        }
+        else printf("[%d] + continued %s\n",ptr->job_id,ptr->cmd);
+        if(kill(-ptr->pgid,SIGCONT)==-1){
+            fprintf(stderr,"msh : bg failed !\n");
+        }
+    }
 }
 void masked_exec(char *line)
 {
@@ -525,6 +552,49 @@ int msh_executeLine(char **args, int *redirection)
                 return 1;
             }
             fg_helper(ptr);
+        }
+        return 1;
+    }
+    else if (strcmp(args[0],"bg")==0){
+        if(!args[1]){
+            if(!head){
+                fprintf(stderr, "msh: fg: no current job\n");
+                return 1;
+            }
+            struct job_node * ptr = head;
+            while(ptr->next)ptr=ptr->next;
+            bg_helper(ptr);
+        }
+        else if(args[1][0]=='%'){
+            char * endptr;
+            long jid = strtol(args[1]+1,&endptr,10);
+            if(*(args[1]+1)=='\0' || *endptr != '\0'){
+                fprintf(stderr,"msh : %%%ld no such job id\n",jid);
+                return 1;
+            }
+            struct job_node * ptr =find_job_jid(head,jid);
+            if(!ptr){
+                fprintf(stderr, "msh: bg: %%%ld: no such job\n", jid);
+                return 1;
+            }
+            bg_helper(ptr);
+        }
+        return 1;
+    }
+    else if (strcmp(args[0],"kill")==0 && args[1] && args[1][0]=='%'){
+        char * endptr;
+        long jid = strtol(args[1]+1,&endptr,10);
+        if(*(args[1]+1)=='\0' || *endptr != '\0'){
+            fprintf(stderr,"msh : %%%ld no such job id\n",jid);
+            return 1;
+        }
+        struct job_node * ptr =find_job_jid(head,jid);
+        if(!ptr){
+            fprintf(stderr, "msh: bg: %%%ld: no such job\n", jid);
+            return 1;
+        }
+        if(ptr->status==running || ptr->status==suspended){
+            kill(-ptr->pgid,SIGINT);//i hope sigchld handler will take care
         }
         return 1;
     }

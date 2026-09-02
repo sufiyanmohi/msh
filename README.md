@@ -6,7 +6,7 @@ Provides built-in commands `cd` , `exit` and `jobs`, and uses a combination of `
 
 ## Features
 
-- **Built-ins**: `cd`, `exit` , `jobs` , `fg` , `fg %n`
+- **Built-ins**: `cd`, `exit` , `jobs` , `fg` , `fg %n` , `bg` ,`bg %n` , `kill %n`
 - **External commands**: anything on `$PATH`, via `fork()` + `execvp()`
 - **I/O redirection**: `>` (truncate), `>>` (append), `<` (input)
 - **Piping**: multi-stage pipelines, e.g. `ls | grep msh | wc -l`
@@ -47,6 +47,9 @@ jobs
 kill <pid>
 fg 
 fg %1
+bg 
+bg %2
+kill %2
 exit
 ```
 ## Credits
