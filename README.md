@@ -45,11 +45,10 @@ false || echo "fallback"
 ./hello & sleep 5 &
 jobs
 kill <pid>
-fg 
-fg %1
-bg 
-bg %2
+fg || fg %1
+bg || bg %2
 kill %2
+./hello | ./pipetest &
 exit
 ```
 ## Credits

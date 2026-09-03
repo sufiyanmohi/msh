@@ -424,7 +424,7 @@ void masked_exec(char *line)
     }
     exit(EXIT_FAILURE);
 }
-int msh_executePipeArgs(char **piping, int number_of_pipes)
+int msh_executePipeArgs(char **piping, int number_of_pipes,char * line)
 {
     for (int i = 0; i <= number_of_pipes; i++)
     {
@@ -454,7 +454,7 @@ int msh_executePipeArgs(char **piping, int number_of_pipes)
         {
             if(i==0){
                 setpgid(0,0);
-                tcsetpgrp(msh_terminal,pids[0]);
+                tcsetpgrp(msh_terminal,getpid());
             }
             else setpgid(pids[i],pids[0]);
             if (i < number_of_pipes)
@@ -487,15 +487,20 @@ int msh_executePipeArgs(char **piping, int number_of_pipes)
         close(fds[i][0]);
         close(fds[i][1]);
     }
-    for (int i = 0; i < number_of_pipes; i++)
+    for (int i = 0; i <= number_of_pipes; i++)
     {
-        waitpid(pids[i], NULL, 0);
+        do
+        {
+            waitpid(pids[i], &status, WUNTRACED);
+        } while (!WIFEXITED(status) && !WIFSIGNALED(status) && !WIFSTOPPED(status));
+        if(WIFSTOPPED(status)){
+            tcsetpgrp(msh_terminal,getpgrp());
+            printf("\nmsh: suspended %s\n",line);
+            job_counter++;
+            head=add_job(head,job_counter,suspended,line,pids[0]);
+            return 0;
+        }
     }
-    do
-    {
-        waitpid(pids[number_of_pipes], &status, WUNTRACED);
-    } while (!WIFEXITED(status) && !WIFSIGNALED(status));
-
     tcsetpgrp(msh_terminal,getpgrp());
     if (WIFEXITED(status))
     {
@@ -505,6 +510,67 @@ int msh_executePipeArgs(char **piping, int number_of_pipes)
     {
         return 0;
     }
+}
+int msh_executePipeArgsBg(char **piping, int number_of_pipes,char * line)
+{
+    for (int i = 0; i <= number_of_pipes; i++)
+    {
+        if (piping[i] == NULL || *piping[i] == '\0')
+        {
+            fprintf(stderr, "msh : expected files with | \n");
+            return 1;
+        }
+    }
+    int fds[number_of_pipes][2];
+    int status;
+    pid_t pids[number_of_pipes + 1];
+    for (int i = 0; i < number_of_pipes; i++)
+    {
+        pipe(fds[i]);
+    }
+    for (int i = 0; i <= number_of_pipes; i++)
+    {
+        pids[i] = fork();
+        if (pids[i] < 0)
+        {
+            fprintf(stderr, "msh : Fork failed \n");
+            exit(EXIT_FAILURE);
+        }
+        if (pids[i] == 0)
+        {
+            setpgid(pids[i],pids[0]);
+            if (i < number_of_pipes)
+            {
+                dup2(fds[i][1], STDOUT_FILENO);
+                close(fds[i][1]);
+            }
+            if (i > 0)
+            {
+                dup2(fds[i - 1][0], STDIN_FILENO);
+                close(fds[i - 1][0]);
+            }
+            for (int j = 0; j < number_of_pipes; j++)
+            {
+                close(fds[j][0]);
+                close(fds[j][1]);
+            }
+
+            masked_exec(piping[i]);
+            exit(EXIT_FAILURE);
+        }
+    }
+    for(int i=0;i<=number_of_pipes;i++){
+        setpgid(pids[i],pids[0]);
+    }
+    for (int i = 0; i < number_of_pipes; i++)
+    {   
+        close(fds[i][0]);
+        close(fds[i][1]);
+    }
+    job_counter++;
+    head = add_job(head,job_counter,running,line,pids[0]);
+    printf("[%d] pgid %d\n", job_counter,pids[0]);
+    return 1;
 }
 int msh_executeLine(char **args, int *redirection)
 {
@@ -572,7 +638,7 @@ int msh_executeLine(char **args, int *redirection)
                 fprintf(stderr,"msh : %%%ld no such job id\n",jid);
                 return 1;
             }
-            struct job_node * ptr =find_job_jid(head,jid);
+            struct job_node * ptr =find_job_jid(head,(int)jid);
             if(!ptr){
                 fprintf(stderr, "msh: bg: %%%ld: no such job\n", jid);
                 return 1;
@@ -588,7 +654,7 @@ int msh_executeLine(char **args, int *redirection)
             fprintf(stderr,"msh : %%%ld no such job id\n",jid);
             return 1;
         }
-        struct job_node * ptr =find_job_jid(head,jid);
+        struct job_node * ptr =find_job_jid(head,(int)jid);
         if(!ptr){
             fprintf(stderr, "msh: bg: %%%ld: no such job\n", jid);
             return 1;
@@ -691,7 +757,7 @@ int msh_executeLine(char **args, int *redirection)
             else if(WIFSTOPPED(status)){
                 job_counter++;
                 head = add_job(head,job_counter,suspended,(char *)args[0],pid);
-                return 1;
+                return 0;
             }
             else
             {
@@ -711,99 +777,110 @@ int msh_executeLayerOne(char **sequences, char *op)
     while (sequences[i])
     {
         char *line = sequences[i];
+        char * line_full = strdup(line);
         char **pipe_args;
         int number_of_pipes;
         pipe_args = msh_tokenizeLineLayerTwo(line, &number_of_pipes);
-        if (number_of_pipes)
+        if (op[i] == 'B')
+        {
+            if (number_of_pipes)
+            {
+                sigprocmask(SIG_BLOCK,&mask,&oldmask);
+                status = msh_executePipeArgsBg(pipe_args, number_of_pipes,line_full);
+                sigprocmask(SIG_UNBLOCK,&mask,&oldmask);
+            }
+            else {
+                char **args;
+                int *redirection = NULL;
+                args = msh_tokenizeLine(line, &redirection);
+                int status;
+                job_counter++;
+                sigprocmask(SIG_BLOCK, &mask, &oldmask);//
+                pid_t pid = fork();
+                if (pid < 0)
+                {
+                    fprintf(stderr, "msh : Fork failed \n");
+                    exit(EXIT_FAILURE);
+                }
+                else if (pid == 0)
+                {
+                    setpgid(0,0);
+                    if (redirection != NULL)
+                    {
+                        int i = 0;
+                        while (redirection[i] != -1)
+                        {
+                            if (args[redirection[i] + 1] != NULL)
+                            {
+                                if (strcmp(args[redirection[i]], ">") == 0)
+                                {
+                                    int file = open(args[redirection[i] + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                                    if (file == -1)
+                                    {
+                                        fprintf(stderr, "msh : unable to open %s \n", args[redirection[i] + 1]);
+                                        exit(EXIT_FAILURE);
+                                    }
+                                    dup2(file, STDOUT_FILENO);
+                                    close(file);
+                                }
+                                else if (strcmp(args[redirection[i]], ">>") == 0)
+                                {
+                                    int file = open(args[redirection[i] + 1], O_WRONLY | O_CREAT | O_APPEND, 0644);
+                                    if (file == -1)
+                                    {
+                                        fprintf(stderr, "msh : unable to open %s \n", args[redirection[i] + 1]);
+                                        exit(EXIT_FAILURE);
+                                    }
+                                    dup2(file, STDOUT_FILENO);
+                                    close(file);
+                                }
+                                else if (args[redirection[i]][0] == '<')
+                                {
+                                    int file = open(args[redirection[i] + 1], O_RDONLY, 0644);
+                                    if (file == -1)
+                                    {
+                                        fprintf(stderr, "msh : unable to open %s \n", args[redirection[i] + 1]);
+                                        exit(EXIT_FAILURE);
+                                    }
+                                    dup2(file, STDIN_FILENO);
+                                    close(file);
+                                }
+                            }
+                            else
+                            {
+                                fprintf(stderr, "msh : expected file after '>'\n");
+                                exit(EXIT_FAILURE);
+                            }
+                            i++;
+                        }
+                        args[redirection[0]] = NULL;
+                    }
+                    signal_reset();// ^c , ^z , ^\ or ^d(not a signal)  do nothing in this case 
+                    // because it is  bg process and it doesnt have tc ,
+                    //  but kill <pid> can send SIGTERM if not  kill -9 <pid> sends SIGKILL which cannot be handelled 
+                    if (execvp(args[0], args) == -1)
+                    {
+                        perror(args[0]);
+                    }
+                    exit(EXIT_FAILURE);
+                }
+                else
+                {
+                    setpgid(pid,pid);
+                    printf("[%d] pid %d\n", job_counter,getpid());
+                    head = add_job(head,job_counter,running,(char *)args[0],pid);
+                    sigprocmask(SIG_UNBLOCK, &mask, &oldmask);//
+                    free(args);
+                    free(redirection);
+                    status = 1;
+                }
+            }
+        }
+        else if (number_of_pipes)
         {
             sigprocmask(SIG_BLOCK, &mask, &oldmask);
-            status = msh_executePipeArgs(pipe_args, number_of_pipes);
+            status = msh_executePipeArgs(pipe_args, number_of_pipes,line_full);
             sigprocmask(SIG_UNBLOCK, &mask, &oldmask);
-        }
-        else if (op[i] == 'B')
-        {
-            char **args;
-            int *redirection = NULL;
-            args = msh_tokenizeLine(line, &redirection);
-            int status;
-            job_counter++;
-            sigprocmask(SIG_BLOCK, &mask, &oldmask);//
-            pid_t pid = fork();
-            if (pid < 0)
-            {
-                fprintf(stderr, "msh : Fork failed \n");
-                exit(EXIT_FAILURE);
-            }
-            else if (pid == 0)
-            {
-                printf("[%d] pid %d\n", job_counter,getpid());
-                setpgid(0,0);
-                if (redirection != NULL)
-                {
-                    int i = 0;
-                    while (redirection[i] != -1)
-                    {
-                        if (args[redirection[i] + 1] != NULL)
-                        {
-                            if (strcmp(args[redirection[i]], ">") == 0)
-                            {
-                                int file = open(args[redirection[i] + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                                if (file == -1)
-                                {
-                                    fprintf(stderr, "msh : unable to open %s \n", args[redirection[i] + 1]);
-                                    exit(EXIT_FAILURE);
-                                }
-                                dup2(file, STDOUT_FILENO);
-                                close(file);
-                            }
-                            else if (strcmp(args[redirection[i]], ">>") == 0)
-                            {
-                                int file = open(args[redirection[i] + 1], O_WRONLY | O_CREAT | O_APPEND, 0644);
-                                if (file == -1)
-                                {
-                                    fprintf(stderr, "msh : unable to open %s \n", args[redirection[i] + 1]);
-                                    exit(EXIT_FAILURE);
-                                }
-                                dup2(file, STDOUT_FILENO);
-                                close(file);
-                            }
-                            else if (args[redirection[i]][0] == '<')
-                            {
-                                int file = open(args[redirection[i] + 1], O_RDONLY, 0644);
-                                if (file == -1)
-                                {
-                                    fprintf(stderr, "msh : unable to open %s \n", args[redirection[i] + 1]);
-                                    exit(EXIT_FAILURE);
-                                }
-                                dup2(file, STDIN_FILENO);
-                                close(file);
-                            }
-                        }
-                        else
-                        {
-                            fprintf(stderr, "msh : expected file after '>'\n");
-                            exit(EXIT_FAILURE);
-                        }
-                        i++;
-                    }
-                    args[redirection[0]] = NULL;
-                }
-                signal_reset();
-                if (execvp(args[0], args) == -1)
-                {
-                    perror(args[0]);
-                }
-                exit(EXIT_FAILURE);
-            }
-            else
-            {
-                setpgid(pid,pid);
-                head = add_job(head,job_counter,running,(char *)args[0],pid);
-                sigprocmask(SIG_UNBLOCK, &mask, &oldmask);//
-                free(args);
-                free(redirection);
-                status = 1;
-            }
         }
         else
         {
@@ -827,6 +904,7 @@ int msh_executeLayerOne(char **sequences, char *op)
             if (status)
                 return 1;
         }
+        free(line_full);
         i++;
     }
     return status;
