@@ -18,9 +18,12 @@ static int should_exit = 0;
 sigset_t mask, oldmask;
 int msh_terminal ;
 int job_counter = 0;
+static volatile sig_atomic_t process_terminated = 0 ;
+static volatile sig_atomic_t fg_pid ;
+static volatile sig_atomic_t fg_done ;
+static volatile sig_atomic_t fg_status ;
 struct job_node {
     int job_id;
-    //pid_t pid ;
     pid_t pgid ;
     enum status {
         running = 1,
@@ -29,31 +32,40 @@ struct job_node {
     }status;
     char * cmd;
     struct job_node * next ;
+    struct grp_node {
+        pid_t pid ;
+        struct grp_node * next;
+        bool is_done ;
+        int status;
+    }*grp_head;
+    bool is_fg ;
 }*head=NULL;
 void print_jobs(struct job_node * node){
     while(node){
-        if(node->status == 1){
-            if(node->next){
-                printf("[%d] - running %s\n",node->job_id,node->cmd);
+        if(!node->is_fg){
+            if(node->status == running){
+                if(node->next){
+                    printf("[%d] - running %s\n",node->job_id,node->cmd);
+                }
+                else printf("[%d] + running %s\n",node->job_id,node->cmd);
             }
-            else printf("[%d] + running %s\n",node->job_id,node->cmd);
-        }
-        else  if (node->status == 0){
-            if(node->next){
-                printf("[%d] - suspended %s\n",node->job_id,node->cmd);
+            else  if (node->status == suspended){
+                if(node->next){
+                    printf("[%d] - suspended %s\n",node->job_id,node->cmd);
+                }
+                else printf("[%d] + suspended %s\n",node->job_id,node->cmd);
             }
-            else printf("[%d] + suspended %s\n",node->job_id,node->cmd);
-        }
-        else {
-            if(node->next){
-                printf("[%d] - terminated %s\n",node->job_id,node->cmd);
+            else {
+                if(node->next){
+                    printf("[%d] - terminated %s\n",node->job_id,node->cmd);
+                }
+                else printf("[%d] + terminated %s\n",node->job_id,node->cmd);
             }
-            else printf("[%d] + terminated %s\n",node->job_id,node->cmd);
         }
         node=node->next;
     }
 } 
-struct job_node * add_job(struct job_node * head,int job_id,int status, char * cmd,pid_t pgid){
+struct job_node * add_job(struct job_node * head,int job_id,int status, char * cmd,pid_t pgid,bool is_fg){
     if(!head){
         head = (struct job_node *)malloc(sizeof(*head));
         head->next = NULL;
@@ -61,6 +73,8 @@ struct job_node * add_job(struct job_node * head,int job_id,int status, char * c
         head->status = status;
         head->cmd = strdup(cmd);
         head->pgid = pgid;
+        head->is_fg=is_fg;
+        head->grp_head=NULL;
         return head;
     }
     struct job_node * ptr = head;
@@ -74,6 +88,8 @@ struct job_node * add_job(struct job_node * head,int job_id,int status, char * c
     new_node->status = status;
     new_node->cmd = strdup(cmd);
     new_node->pgid=pgid;
+    new_node->is_fg=is_fg;
+    new_node->grp_head=NULL;
     ptr->next = new_node;
     return head;
 }
@@ -83,22 +99,49 @@ struct job_node * remove_job(struct job_node * head , pid_t pgid){
         ptr = ptr->next;
     }
     if(ptr){
+        struct job_node * temp = head ;
         if(ptr==head) {
-            struct job_node * temp = head ;
             head = head->next;
+            struct grp_node * grp = temp->grp_head;
+            while(grp){
+                struct grp_node * t = grp;
+                grp=grp->next;
+                free(t);
+            }
             free(temp->cmd);
             free(temp);
             return head;
         }
-        struct job_node * temp = head;
         while(temp->next!=ptr){
             temp = temp->next;
         }
         temp->next=ptr->next;
+        struct grp_node * grp = ptr->grp_head;
+        while(grp){
+            struct grp_node * t = grp;
+            grp=grp->next;
+            free(t);
+        }
         free(ptr->cmd);
         free(ptr);
     }
     return head;
+}
+struct grp_node * add_grp_node (struct job_node * node , pid_t pid){
+    struct grp_node * temp = (struct grp_node * )malloc(sizeof(*temp));
+    temp->next = NULL;
+    temp->pid=pid;
+    temp->is_done = false;
+    if(!node->grp_head){
+        node->grp_head = temp;
+        return node->grp_head;
+    }
+    struct grp_node * ptr = node->grp_head ;
+    while(ptr->next){
+        ptr=ptr->next;
+    }
+    ptr->next=temp;
+    return node->grp_head;
 }
 char *msh_readLine()
 {
@@ -308,6 +351,13 @@ struct job_node * find_job_pid(struct job_node * head , pid_t pid){
     }
     return ptr;
 }
+struct grp_node * find_grp_pid(struct job_node * head , pid_t pid){
+    struct grp_node * ptr = head->grp_head;
+    while(ptr && ptr->pid!=pid){
+        ptr=ptr->next;
+    }
+    return ptr;
+}
 void fg_helper(struct job_node * ptr){
     int status;
     pid_t fg_pgid = ptr->pgid;
@@ -323,6 +373,7 @@ void fg_helper(struct job_node * ptr){
             else printf("[%d] + running %s\n",ptr->job_id,ptr->cmd);
         }
         if(tcsetpgrp(msh_terminal,ptr->pgid)==0){
+            ptr->is_fg = true;
             head=remove_job(head,ptr->pgid);
             if(fg_status==suspended){
                 if(fg_next){
@@ -340,7 +391,7 @@ void fg_helper(struct job_node * ptr){
             tcsetpgrp(msh_terminal,getpgrp());
             if(WIFSTOPPED(status)){
                 job_counter++;
-                head = add_job(head,job_counter,suspended,fg_cmd,fg_pgid);
+                head = add_job(head,job_counter,suspended,fg_cmd,fg_pgid,false);
             }
         }
         else fprintf(stderr,"msh : fg failed !\n");
@@ -350,6 +401,7 @@ void fg_helper(struct job_node * ptr){
 void bg_helper(struct job_node * ptr){
     if(ptr->status==suspended){
         ptr->status=running;
+        ptr->is_fg = false;
         if(ptr->next){
             printf("[%d] - continued %s\n",ptr->job_id,ptr->cmd);
         }
@@ -359,10 +411,8 @@ void bg_helper(struct job_node * ptr){
         }
     }
 }
-void masked_exec(char *line)
+void masked_exec(char ** args,int * redirection)
 {
-    int *redirection = NULL;
-    char **args = msh_tokenizeLine(line, &redirection);
     if (redirection != NULL)
     {
         int i = 0;
@@ -443,8 +493,9 @@ int msh_executePipeArgs(char **piping, int number_of_pipes,char * line)
     }
     for (int i = 0; i <= number_of_pipes; i++)
     {
+        int *redirection = NULL;
+        char **args = msh_tokenizeLine(piping[i], &redirection);
         pids[i] = fork();
-        
         if (pids[i] < 0)
         {
             fprintf(stderr, "msh : Fork failed \n");
@@ -473,35 +524,55 @@ int msh_executePipeArgs(char **piping, int number_of_pipes,char * line)
                 close(fds[j][1]);
             }
 
-            masked_exec(piping[i]);
+            masked_exec(args,redirection);
             exit(EXIT_FAILURE);
         }
+        free(redirection);
+        free(args);
     }
     setpgid(pids[0],pids[0]);
     tcsetpgrp(msh_terminal,pids[0]);
+    head = add_job(head,0,running,line,pids[0],true);
+    struct job_node * leader = find_job_pid(head,pids[0]);
+    leader->grp_head = add_grp_node(leader,pids[0]);
     for(int i=1;i<=number_of_pipes;i++){
         setpgid(pids[i],pids[0]);
+        leader->grp_head = add_grp_node(leader,pids[i]);
+
     }
     for (int i = 0; i < number_of_pipes; i++)
     {   
         close(fds[i][0]);
         close(fds[i][1]);
     }
+    struct grp_node * ptr = leader->grp_head;
     for (int i = 0; i <= number_of_pipes; i++)
     {
-        do
-        {
-            waitpid(pids[i], &status, WUNTRACED);
-        } while (!WIFEXITED(status) && !WIFSIGNALED(status) && !WIFSTOPPED(status));
+        //fg_done = 0;
+        fg_pid = pids[0];
+        sigset_t empty ;
+        sigemptyset(&empty);
+        while(!ptr->is_done){
+            int prev_errno = errno;
+            sigsuspend(&empty);
+            errno = prev_errno;
+        }
+        //status  = fg_status;
+        status = ptr->status;
+        fg_pid = 0;
         if(WIFSTOPPED(status)){
             tcsetpgrp(msh_terminal,getpgrp());
             printf("\nmsh: suspended %s\n",line);
             job_counter++;
-            head=add_job(head,job_counter,suspended,line,pids[0]);
+            leader->status = suspended;
+            leader->job_id = job_counter;
+            leader->is_fg = false;
             return 0;
         }
+        ptr=ptr->next;
     }
     tcsetpgrp(msh_terminal,getpgrp());
+    head = remove_job(head,pids[0]);
     if (WIFEXITED(status))
     {
         return WEXITSTATUS(status) == 0;
@@ -530,6 +601,8 @@ int msh_executePipeArgsBg(char **piping, int number_of_pipes,char * line)
     }
     for (int i = 0; i <= number_of_pipes; i++)
     {
+        int *redirection = NULL;
+        char **args = msh_tokenizeLine(piping[i], &redirection);
         pids[i] = fork();
         if (pids[i] < 0)
         {
@@ -555,9 +628,11 @@ int msh_executePipeArgsBg(char **piping, int number_of_pipes,char * line)
                 close(fds[j][1]);
             }
 
-            masked_exec(piping[i]);
+            masked_exec(args,redirection);
             exit(EXIT_FAILURE);
         }
+        free(redirection);
+        free(args);
     }
     for(int i=0;i<=number_of_pipes;i++){
         setpgid(pids[i],pids[0]);
@@ -568,11 +643,11 @@ int msh_executePipeArgsBg(char **piping, int number_of_pipes,char * line)
         close(fds[i][1]);
     }
     job_counter++;
-    head = add_job(head,job_counter,running,line,pids[0]);
+    head = add_job(head,job_counter,running,line,pids[0],false);
     printf("[%d] pgid %d\n", job_counter,pids[0]);
     return 1;
 }
-int msh_executeLine(char **args, int *redirection)
+int msh_executeLine(char **args, int *redirection,char * line)
 {
     if (args[0] == NULL)
     {
@@ -744,11 +819,17 @@ int msh_executeLine(char **args, int *redirection)
         {
             setpgid(pid,pid);
             tcsetpgrp(msh_terminal,pid);
-            do
-            {
-                waitpid(pid, &status, WUNTRACED);
-            } while (!WIFEXITED(status) && !WIFSIGNALED(status) && !WIFSTOPPED(status));
-
+            fg_done = 0;
+            fg_pid = pid;
+            sigset_t empty ;
+            sigemptyset(&empty);
+            while(fg_done==0){
+                int prev_errno = errno;
+                sigsuspend(&empty);
+                errno = prev_errno;
+            }
+            status  = fg_status;
+            fg_pid = 0;
             tcsetpgrp(msh_terminal,getpgrp());
             if (WIFEXITED(status))
             {
@@ -756,7 +837,8 @@ int msh_executeLine(char **args, int *redirection)
             }
             else if(WIFSTOPPED(status)){
                 job_counter++;
-                head = add_job(head,job_counter,suspended,(char *)args[0],pid);
+                head = add_job(head,job_counter,suspended,(char *)args[0],pid,false);
+                printf("msh: suspended %s",line);
                 return 0;
             }
             else
@@ -794,7 +876,6 @@ int msh_executeLayerOne(char **sequences, char *op)
                 int *redirection = NULL;
                 args = msh_tokenizeLine(line, &redirection);
                 int status;
-                job_counter++;
                 sigprocmask(SIG_BLOCK, &mask, &oldmask);//
                 pid_t pid = fork();
                 if (pid < 0)
@@ -855,9 +936,8 @@ int msh_executeLayerOne(char **sequences, char *op)
                         }
                         args[redirection[0]] = NULL;
                     }
-                    signal_reset();// ^c , ^z , ^\ or ^d(not a signal)  do nothing in this case 
-                    // because it is  bg process and it doesnt have tc ,
-                    //  but kill <pid> can send SIGTERM if not  kill -9 <pid> sends SIGKILL which cannot be handelled 
+                    signal_reset();
+                    sigprocmask(SIG_UNBLOCK, &mask, &oldmask);//
                     if (execvp(args[0], args) == -1)
                     {
                         perror(args[0]);
@@ -867,8 +947,9 @@ int msh_executeLayerOne(char **sequences, char *op)
                 else
                 {
                     setpgid(pid,pid);
+                    job_counter++;
                     printf("[%d] pid %d\n", job_counter,getpid());
-                    head = add_job(head,job_counter,running,(char *)args[0],pid);
+                    head = add_job(head,job_counter,running,(char *)args[0],pid,false);
                     sigprocmask(SIG_UNBLOCK, &mask, &oldmask);//
                     free(args);
                     free(redirection);
@@ -888,12 +969,13 @@ int msh_executeLayerOne(char **sequences, char *op)
             char **args;
             int *redirection = NULL;
             args = msh_tokenizeLine(line, &redirection);
-            status = msh_executeLine(args, redirection);
+            status = msh_executeLine(args, redirection,line_full);
             free(args);
             free(redirection);
             sigprocmask(SIG_UNBLOCK, &mask, &oldmask);
         }
         free(pipe_args);
+        free(line_full);
         if (op[i] == 'A')
         {
             if (!status)
@@ -904,7 +986,6 @@ int msh_executeLayerOne(char **sequences, char *op)
             if (status)
                 return 1;
         }
-        free(line_full);
         i++;
     }
     return status;
@@ -914,15 +995,35 @@ void sigchld_handler(int sig)
     int saved_errno = errno;
     int status;
     pid_t p;
-    while ((p = waitpid(-1, &status, WNOHANG)) > 0)
+    while ((p = waitpid(-1, &status, WNOHANG|WUNTRACED)) > 0)
     {
-        struct job_node * temp = find_job_pid(head,p);
-        if(temp){
-            if(temp->next){
-            printf("[%d] - terminated %s\n",temp->job_id,temp->cmd);
+        struct job_node * temp = find_job_pid(head,fg_pid);
+        struct grp_node * grp = NULL;
+        if (temp) grp = find_grp_pid(temp,p);
+        if(grp){
+            grp->is_done = true;
+            grp->status = status;
         }
-        else printf("[%d] + terminated %s\n",temp->job_id,temp->cmd);
-        head = remove_job(head,p);
+        else if(p==fg_pid){
+            fg_done = 1;
+            fg_status = status;
+        }
+        else {
+            struct job_node * temp = find_job_pid(head,p);
+            if(temp){
+                process_terminated = p;
+                char buf[265];
+                int n;
+                if(temp->next){
+                    n = snprintf(buf,sizeof(buf),"[%d] - terminated %s\n",temp->job_id,temp->cmd);
+                }
+                else {
+                    n = snprintf(buf,sizeof(buf),"[%d] + terminated %s\n",temp->job_id,temp->cmd);
+                }
+                if(n>0){
+                    write(msh_terminal,&buf,(size_t)(n<(int)sizeof(buf) ? n : sizeof(buf)-1));
+                }
+            }
         }
     }
     errno = saved_errno;
@@ -943,6 +1044,10 @@ int main()
     msh_terminal = open("/dev/tty",O_RDWR);
     do
     {
+        if(process_terminated!=0){
+            head = remove_job(head,process_terminated);
+            process_terminated = 0;
+        }
         char *op;
         line = msh_readLine();
         sequences = msh_tokenizeLineLayerOne(line, &op);
